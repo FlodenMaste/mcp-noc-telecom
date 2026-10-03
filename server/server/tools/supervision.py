@@ -54,3 +54,42 @@ def snmp_get(router: str, oid: str = ".1.3.6.1.2.1.1") -> dict:
         "oid": oid,
         "raw_output": result.stdout.strip(),
     }
+
+
+# --- Version securisee de snmp_get, avec neutralisation des sorties ---
+from server.security.sanitizer import sanitize_untrusted_output
+
+
+@require_role("operateur")
+def snmp_get_secure(router: str, oid: str = ".1.3.6.1.2.1.1") -> dict:
+    """
+    Identique a snmp_get, mais fait passer la sortie de l'equipement
+    reseau (entree non fiable) par la couche de neutralisation avant
+    de la retourner au LLM.
+    """
+    raw_result = snmp_get.__wrapped__(router, oid)
+
+    if not raw_result.get("success"):
+        return raw_result
+
+    analysis = sanitize_untrusted_output(
+        raw_result["raw_output"], source=f"snmp-{router}"
+    )
+
+    if analysis["is_flagged"]:
+        from server.security.audit_log import log_action
+        log_action(
+            user="systeme",
+            tool="snmp_get_secure",
+            params={"router": router},
+            status="ALERTE_INJECTION_NEUTRALISEE",
+            detail=f"Patterns detectes : {analysis['flags_detected']}",
+        )
+
+    return {
+        "success": True,
+        "router": router,
+        "oid": oid,
+        "output": analysis["sanitized_text"],
+        "injection_detectee": analysis["is_flagged"],
+    }
